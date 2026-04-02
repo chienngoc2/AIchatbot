@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nhật kí D4C</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Patrick+Hand&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+    
+  </head>
+  <body>
+    <div class="app-container">
+      <aside class="sidebar sidebar-left">
+        <div class="sidebar-content bg-image left-bg">
+          <button class="nav-btn" onclick="window.location.href = 'note.html'" title="Mở kho kiến thức AI">Ghi Chú AI</button>
+        </div>
+      </aside>
+
+      <main class="center-stage">
+        <div class="header-widget">
+          <h2 class="app-title">
+            <img src="https://cdn-icons-png.flaticon.com/512/3238/3238016.png" class="app-logo" alt="Logo" />
+            AI D4C
+          </h2>
+        </div>
+
+        <div id="chat">
+          <div class="msg-row bot">
+            <div class="role-label">Nhật Ký</div>
+            <div class="msg-content">Chào bạn! Hôm nay thế nào? 🌿</div>
+          </div>
+        </div>
+
+        <div class="control-dock">
+          <input type="text" id="textInput" placeholder="Viết vào đây..." onkeypress="handleEnter(event)" />
+          <button class="icon-btn" onclick="sendText()" title="Gửi">
+            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
+          </button>
+          <div class="divider"></div>
+          <div class="input-group">
+            <select id="micLangSelect" onchange="updateMicLang()" title="Chọn ngôn ngữ nói">
+              <option value="vi-VN">🇻🇳 Việt</option>
+              <option value="en-US">🇺🇸 Anh</option>
+              <option value="ja-JP">🇯🇵 Nhật</option>
+            </select>
+            <button id="micBtn" onclick="toggleMic()" title="Bấm để nói">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.66 9 5v6c0 1.66 1.34 3 3 3z" />
+                <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
+              </svg>
+            </button>
+          </div>
+          <div class="divider"></div>
+          <div class="settings-container">
+            <button class="icon-btn" onclick="toggleSettings()">
+              <svg viewBox="0 0 24 24"><path d="M4 15h16v-2H4v2zm0 4h16v-2H4v2zm0-8h16V9H4v2zm0-6v2h16V5H4z" /></svg>
+            </button>
+            <div class="settings-popup" id="settingsPopup">
+              <div class="popup-header">CÀI ĐẶT GIỌNG NÓI</div>
+              <div class="menu-item active" id="opt-google" onclick="selectMode('google')">
+                <div><h4>Google Basic</h4><p>Tự động đổi giọng theo ngôn ngữ</p></div>
+              </div>
+              <div class="menu-item" id="opt-elevenlabs" onclick="selectMode('elevenlabs')">
+                <div><h4>ElevenLabs Pro</h4><p>Dán Voice ID vào ô dưới</p></div>
+              </div>
+              <div id="voiceIdContainer">
+                <div class="voice-input-group">
+                  <input type="text" id="voiceIdInput" placeholder="Ví dụ: 21m00Tcm4TlvDq8ikWAM" value="21m00Tcm4TlvDq8ikWAM" />
+                  <button id="saveVoiceBtn" onclick="saveVoiceID()">OK</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <button class="icon-btn" onclick="saveHistory()">
+            <svg viewBox="0 0 24 24"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z" /></svg>
+          </button>
+        </div>
+      </main>
+
+      <aside class="sidebar sidebar-right">
+        <div class="sidebar-content bg-image right-bg"></div>
+      </aside>
+    </div>
+
+    <script>
+      const chat = document.getElementById("chat");
+      const micBtn = document.getElementById("micBtn");
+      const textInput = document.getElementById("textInput");
+      const micLangSelect = document.getElementById("micLangSelect");
+      const voiceIdInput = document.getElementById("voiceIdInput");
+      const voiceIdContainer = document.getElementById("voiceIdContainer");
+
+      let currentMode = "google";
+      let chatHistoryLog = [];
+      let isListening = false;
+      let recognition;
+      let currentAudioObject = null;
+      let silenceTimer = null;
+
+      if (localStorage.getItem("myVoiceId")) {
+        voiceIdInput.value = localStorage.getItem("myVoiceId");
+      }
+
+      function saveVoiceID() {
+        const id = voiceIdInput.value.trim();
+        if (!id) return alert("⚠️ Vui lòng nhập ID!");
+        localStorage.setItem("myVoiceId", id);
+        alert("✅ Đã lưu Voice ID!");
+      }
+
+      if ("webkitSpeechRecognition" in window) {
+        recognition = new webkitSpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = "vi-VN";
+      }
+
+      function updateMicLang() { if (recognition) recognition.lang = micLangSelect.value; }
+
+      // Hàm bóc tách link và hiển thị hàng ngang
+      function formatText(text) {
+        if (!text) return "";
+        let formatted = text.replace(/\*\*(.*?)\*\*/g, "<b>$1</b>");
+        const sourceRegex = /\[SOURCES:\s*(.*?)\s*\|\s*(.*?)\]/g;
+        const sources = [];
+        let match;
+        while ((match = sourceRegex.exec(formatted)) !== null) {
+          sources.push({ name: match[1], url: match[2] });
+        }
+        let cleanText = formatted.replace(sourceRegex, "").replace(/\n/g, "<br>");
+        let sourcesHtml = "";
+        if (sources.length > 0) {
+          sourcesHtml = '<div class="sources-container">';
+          sources.forEach(src => {
+            sourcesHtml += `<a href="${src.url.trim()}" target="_blank" class="source-btn">🌐 ${src.name.trim()}</a>`;
+          });
+          sourcesHtml += '</div>';
+        }
+        return cleanText + sourcesHtml;
+      }
+
+      function toggleSettings() { document.getElementById("settingsPopup").classList.toggle("show"); }
+
+      function selectMode(mode) {
+        currentMode = mode;
+        document.querySelectorAll(".menu-item").forEach((el) => el.classList.remove("active"));
+        document.getElementById("opt-" + mode).classList.add("active");
+        voiceIdContainer.style.display = mode === "elevenlabs" ? "block" : "none";
+      }
+
+      function handleEnter(e) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          sendText();
+        }
+      }
+
+      function sendText() {
+        const val = textInput.value;
+        if (val.trim()) processMessage(val);
+      }
+
+      async function processMessage(text) {
+        const match = text.match(/(\d{1,2})-(\d{1,2})-(\d{4})/);
+        if ((text.toLowerCase().includes("xem") || text.toLowerCase().includes("lịch sử")) && match) {
+          fetchHistory(match[0]);
+          return;
+        }
+
+        addMessage("user", text);
+        textInput.value = "";
+
+        try {
+          const storedId = localStorage.getItem("myVoiceId") || voiceIdInput.value.trim();
+          const res = await fetch("http://localhost:3000/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: text,
+              mode: currentMode,
+              voiceId: currentMode === "elevenlabs" ? storedId : null,
+              historyContext: chatHistoryLog.slice(-6),
+            }),
+          });
+          const data = await res.json();
+          addMessage("bot", data.reply, data.audio);
+          if (data.audio) playAudioQueue(Array.isArray(data.audio) ? data.audio : [data.audio]);
+        } catch (err) {
+          addMessage("bot", "⚠️ Lỗi: " + err.message);
+        }
+      }
+
+      function addMessage(role, text, audioData = null) {
+        const rowDiv = document.createElement("div");
+        rowDiv.className = `msg-row ${role}`;
+        let contentHtml = `<div class="msg-content">${formatText(text)}</div>`;
+        if (role === "bot" && audioData) {
+          const msgId = Date.now();
+          window["audio_" + msgId] = audioData;
+          contentHtml = `<div style="display:flex; align-items:flex-end; gap:8px;">
+            <div class="msg-content">${formatText(text)}</div>
+            <button class="replay-btn" onclick="replayStoredAudio('${msgId}')">🔊</button>
+          </div>`;
+        }
+        rowDiv.innerHTML = `<div class="role-label">${role === "user" ? "Bạn" : "Nhật Ký"}</div>${contentHtml}`;
+        chat.appendChild(rowDiv);
+        chat.scrollTop = chat.scrollHeight;
+        chatHistoryLog.push({ role, text, time: new Date().toLocaleTimeString() });
+      }
+
+      function playAudioQueue(audioList) {
+        if (!audioList || audioList.length === 0) return;
+        if (currentAudioObject) currentAudioObject.pause();
+        currentAudioObject = new Audio(audioList[0]);
+        currentAudioObject.onended = () => playAudioQueue(audioList.slice(1));
+        currentAudioObject.play().catch((e) => console.error(e));
+      }
+
+      window.replayStoredAudio = function (msgId) {
+        const d = window["audio_" + msgId];
+        if (d) playAudioQueue(Array.isArray(d) ? d : [d]);
+      };
+
+      function toggleMic() {
+        if (!recognition) return alert("Trình duyệt lỗi Mic");
+        if (isListening) recognition.stop();
+        else { updateMicLang(); recognition.start(); }
+      }
+
+      if (recognition) {
+        recognition.onstart = () => { isListening = true; micBtn.classList.add("listening"); textInput.placeholder = "Đang nghe..."; };
+        recognition.onend = () => { isListening = false; micBtn.classList.remove("listening"); textInput.placeholder = "Viết vào đây..."; if (textInput.value.trim()) processMessage(textInput.value); };
+        recognition.onresult = (e) => {
+          let t = "";
+          for (let i = e.resultIndex; i < e.results.length; ++i) t += e.results[i][0].transcript;
+          textInput.value = t;
+          clearTimeout(silenceTimer);
+          silenceTimer = setTimeout(() => recognition.stop(), 1500);
+        };
+      }
+
+      async function saveHistory() {
+        if (!chatHistoryLog.length) return alert("📭 Nhật ký trống!");
+        const res = await fetch("http://localhost:3000/save-history", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ history: chatHistoryLog }),
+        });
+        const data = await res.json();
+        if (data.success) alert("✅ Đã lưu nhật ký!");
+      }
+
+      async function fetchHistory(dateStr) {
+        const res = await fetch(`http://localhost:3000/get-history?date=${dateStr}`);
+        const data = await res.json();
+        if (data.success) {
+          chat.innerHTML = ""; chatHistoryLog = [];
+          data.data.forEach((msg) => addMessage(msg.role, `[Lịch sử ${msg.time}] ${msg.text}`));
+        }
+      }
+    </script>
+  </body>
+</html>

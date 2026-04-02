@@ -1,0 +1,10 @@
+# Bỏ qua thư mục thư viện (rất nặng)
+node_modules/
+
+# Bỏ qua file chứa API Key (Tuyệt đối không push lên Git)
+.env
+
+# Bỏ qua các file sinh ra trong quá trình sử dụng
+chat_history/
+uploads/
+.DS_Store
