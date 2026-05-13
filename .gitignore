@@ -8,3 +8,4 @@ node_modules/
 chat_history/
 uploads/
 .DS_Store
+google_tokens.json

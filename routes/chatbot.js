@@ -1,4 +1,3 @@
-// routes/chatbot.js
 import express from "express";
 import Groq from "groq-sdk";
 import fs from "fs";
@@ -10,6 +9,8 @@ import { generateSmartAudio } from "../utils/audio.js";
 import { searchMemory } from "../utils/memory.js";
 import { buildRAGPrompt } from "../utils/promptBuilder.js";
 import { searchWeb } from "../utils/tavilySearch.js";
+import { upload } from "../utils/upload.js";
+import { getTokens, getAuthUrl, createEvent } from "../utils/googleCalendar.js";
 
 const router = express.Router();
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -17,167 +18,220 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const HISTORY_DIR = path.join(process.cwd(), "chat_history");
 if (!fs.existsSync(HISTORY_DIR)) fs.mkdirSync(HISTORY_DIR);
 
+// --- Route xác thực Google ---
+router.get("/auth-google", (req, res) => {
+  const url = getAuthUrl();
+  res.send(
+    `<div style="text-align:center; margin-top:50px;"><a href="${url}" style="font-size:24px; font-family:sans-serif; text-decoration:none; color:white; background:#4285f4; padding:15px 25px; border-radius:10px;">👉 Bấm vào đây để cấp quyền Google Calendar</a></div>`,
+  );
+});
+
+router.get("/oauth2callback", async (req, res) => {
+  const { code } = req.query;
+  try {
+    const tokens = await getTokens(code);
+    fs.writeFileSync("google_tokens.json", JSON.stringify(tokens));
+    res.send(
+      "<h1>✅ Xác thực thành công! Giờ sếp có thể đặt lịch qua AI rồi.</h1>",
+    );
+  } catch (err) {
+    res.status(500).send("Lỗi xác thực: " + err.message);
+  }
+});
+
+// --- Xử lý Whisper (Giọng nói sang chữ) ---
+router.post("/transcribe", upload.single("audio"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "Không có file" });
+    const tempFilePath = req.file.path + ".webm";
+    fs.renameSync(req.file.path, tempFilePath);
+    const transcription = await groq.audio.transcriptions.create({
+      file: fs.createReadStream(tempFilePath),
+      model: "whisper-large-v3",
+      language: "vi",
+    });
+    fs.unlinkSync(tempFilePath);
+    res.json({ success: true, text: transcription.text });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ==========================================
 // API CHÍNH: XỬ LÝ TRÒ CHUYỆN (CHAT)
 // ==========================================
 router.post("/chat", async (req, res) => {
   try {
     const { text, mode, voiceId, historyContext } = req.body;
-
-    if (!text || typeof text !== "string" || text.trim() === "") {
-      return res.json({ reply: "...", audio: [] });
-    }
+    if (!text?.trim()) return res.json({ reply: "...", audio: [] });
 
     console.log(`\n🗣️ User: ${text}`);
 
-    // --- 1. KÍCH HOẠT TRÍ NHỚ (Truy xuất từ Pinecone) ---
     const relatedMemories = await searchMemory(text);
-
-    // --- 2. CHUẨN BỊ PROMPT BẰNG FILE BUILDER ---
     const dynamicPrompt = buildRAGPrompt(text, relatedMemories);
 
-    if (relatedMemories) {
-      console.log(`🧠 Đã nạp ký ức và căn chỉnh thời gian cho AI.`);
-    }
+    const messages = [
+      { role: "system", content: dynamicPrompt },
+      ...(historyContext?.slice(-4).map((m) => ({
+        role: m.role === "bot" ? "assistant" : "user",
+        content: m.text,
+      })) || []),
+      { role: "user", content: text },
+    ];
 
-    // --- 3. ĐÓNG GÓI TIN NHẮN ---
-    const messages = [{ role: "system", content: dynamicPrompt }];
-
-    if (historyContext && Array.isArray(historyContext)) {
-      messages.push(
-        ...historyContext.slice(-4).map((m) => ({
-          role: m.role === "bot" ? "assistant" : "user",
-          content: m.text,
-        })),
-      );
-    }
-
-    messages.push({ role: "user", content: text });
-
-
-    // --- 4. GỌI AI SUY NGHĨ (AI AGENT VỚI FUNCTION CALLING) ---
     const tools = [
       {
         type: "function",
         function: {
           name: "tavily_search",
           description:
-            "CRITICAL: You MUST use this tool to fetch ANY public news, daily news, world events, and real-time prices (Crypto, stocks, gold). This applies to 'today' AND 'yesterday' news. DO NOT look at personal memory for public news. USE THIS TOOL IMMEDIATELY.",
+            "Tìm tin tức, sự kiện thực tế. KHÔNG dùng khi người dùng yêu cầu đặt lịch.",
+          parameters: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "create_calendar_event",
+          
+          description: "Tạo sự kiện Google Calendar. LƯU Ý CỰC KỲ QUAN TRỌNG: Hãy luôn hiểu thời gian theo múi giờ Việt Nam (GMT+7). Nếu người dùng nói 7 giờ chiều/tối, hãy chuyển chính xác thành 19:00:00. Định dạng ISO phải là YYYY-MM-DDTHH:mm:ss+07:00",
           parameters: {
             type: "object",
             properties: {
-              query: {
+              summary: { type: "string", description: "Tiêu đề ngắn gọn" },
+              start_time: {
                 type: "string",
-                description:
-                  "Từ khóa tìm kiếm. MẸO: Tìm giá cả thì dùng Tiếng Anh (live BTC price). Tìm tin tức Việt Nam thì dùng Tiếng Việt (tin tức nổi bật Việt Nam hôm qua).",
+                description: "Thời gian bắt đầu ISO format",
               },
+              description: { type: "string", description: "Chi tiết sự kiện" },
             },
-            required: ["query"],
+            required: ["summary", "start_time"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "manage_task",
+          description: "Ghi chú nhanh hoặc đặt báo thức cục bộ.",
+          parameters: {
+            type: "object",
+            properties: {
+              action: { type: "string", enum: ["reminder", "todo"] },
+              content: { type: "string" },
+              time: { type: "string" },
+            },
+            required: ["action", "content"],
           },
         },
       },
     ];
 
-    // Lần 1: Quyết định hành động (Temperature = 0 để tránh lỗi cú pháp)
+    // --- LẦN 1: AI QUYẾT ĐỊNH CÓ DÙNG TOOL HAY KHÔNG ---
     const firstResponse = await groq.chat.completions.create({
-      messages: messages,
-      model: "llama-3.1-8b-instant", // S(Nhỏ gọn, siêu nhanh, tốn 1/10 token)
+      messages,
+      model: "llama-3.3-70b-versatile",
       temperature: 0,
-      max_tokens: 500,
-      tools: tools,
+      tools,
       tool_choice: "auto",
     });
 
     const responseMessage = firstResponse.choices[0].message;
-    let aiReply = "";
 
-    // XỬ LÝ NẾU AI MUỐN GỌI TOOL (Lướt web)
+    // --- NẾU AI MUỐN GỌI CÔNG CỤ ---
     if (responseMessage.tool_calls) {
-      const toolCall = responseMessage.tool_calls[0];
-      const functionName = toolCall.function.name;
-      const args = JSON.parse(toolCall.function.arguments);
+      console.log("🛠️ AI đang thực thi công cụ...");
+      messages.push(responseMessage);
 
-      if (functionName === "tavily_search") {
-        console.log(`🌐 AI đang lướt web tìm: "${args.query}"`);
+      for (const toolCall of responseMessage.tool_calls) {
+        const name = toolCall.function.name;
+        const args = JSON.parse(toolCall.function.arguments);
+        let toolContent = "";
 
-        // Gọi hàm search thực tế
-        const webData = await searchWeb(args.query);
+        if (name === "tavily_search") {
+          toolContent = await searchWeb(args.query);
+        } else if (name === "create_calendar_event") {
+          try {
+            if (!fs.existsSync("google_tokens.json")) {
+              toolContent =
+                "⚠️ Lỗi: Sếp chưa xác thực Google. Hãy vào http://localhost:3000/auth-google";
+            } else {
+              const tokens = JSON.parse(fs.readFileSync("google_tokens.json"));
+              const link = await createEvent(tokens, args);
+              // Ép AI ở lần 2 phải chèn link này vào cuối câu
+              toolContent = `THÀNH CÔNG. Link lịch: ${link}. YÊU CẦU: Hiển thị định dạng [SOURCES: Xem lịch trên Google | ${link}] ở cuối câu trả lời.`;
+            }
+          } catch (e) {
+            toolContent = "❌ Lỗi hệ thống Google Calendar.";
+          }
+        } else if (name === "manage_task") {
+          if (args.action === "reminder") {
+            toolContent = `[SET_ALARM: ${args.time} | ${args.content}] Đã đặt báo thức cục bộ.`;
+          } else {
+            toolContent = `✅ Đã ghi chú: ${args.content}`;
+          }
+          fs.appendFileSync(
+            "tasks.json",
+            JSON.stringify({ ...args, date: new Date() }) + "\n",
+          );
+        }
 
-        // Tạo chuỗi data có gắn lệnh Tối cao
-        const enforcedWebData =
-          webData +
-          `\n\n🚨 LỆNH TỐI CAO DÀNH CHO AI: Bạn vừa đọc dữ liệu từ Internet. BẮT BUỘC liệt kê tất cả các link (URL) có trong dữ liệu trên xuống CUỐI CÙNG của câu trả lời. 
-Cú pháp BẮT BUỘC (không xuống dòng giữa các thẻ): 
-[SOURCES: Tên Nguồn 1 | Link 1] [SOURCES: Tên Nguồn 2 | Link 2]`;
-
-        // Bơm data mạng vào đầu AI
-        messages.push(responseMessage);
         messages.push({
           role: "tool",
           tool_call_id: toolCall.id,
-          name: toolCall.function.name,
-          content: enforcedWebData, // ✅ ĐÃ SỬA THÀNH enforcedWebData (Trọng tâm nằm ở đây!)
+          name,
+          content: toolContent,
         });
-
-        console.log(`🧠 Đang tổng hợp dữ liệu từ internet...`);
-        messages.push({
-          role: "system",
-          content:
-            "LỆNH TỐI CAO: Trong dữ liệu Web vừa nhận được, có chứa các mục 'URL: [đường_link]'. Bạn PHẢI copy chính xác 100% đường_link đó. TUYỆT ĐỐI KHÔNG TỰ BỊA LINK HAY VIẾT LINK TRANG CHỦ. Cú pháp: [SOURCES: Tên Báo | URL]",
-        });
-
-        // Lần 2: Bắt AI đọc dữ liệu Web và trả lời
-        const secondResponse = await groq.chat.completions.create({
-          messages: messages,
-          model: "llama-3.3-70b-versatile",
-          temperature: 0.1, // Hạ cực thấp để AI copy chữ chuẩn xác, không chế cháo
-          max_tokens: 600,
-        });
-
-        aiReply = secondResponse.choices[0]?.message?.content || "...";
       }
-    }
-    // NẾU AI TỰ TRẢ LỜI (Dùng RAG hoặc chat thường)
-    else {
-      aiReply = responseMessage.content;
+
+      // --- LẦN 2: AI TỔNG HỢP CÂU TRẢ LỜI CUỐI CÙNG ---
+      const finalResponse = await groq.chat.completions.create({
+        messages,
+        model: "llama-3.3-70b-versatile",
+        temperature: 0.5,
+      });
+
+      const aiReply =
+        finalResponse.choices[0].message.content ||
+        "Đã xong việc sếp giao rồi ạ!";
+      const finalAudio = await generateSmartAudio(aiReply, mode, voiceId);
+      console.log("🤖 AI Reply (Tool):", aiReply);
+      return res.json({ reply: aiReply, audio: finalAudio });
     }
 
-    console.log(`🤖 AI: ${aiReply}`);
-
-    // --- 5. TẠO GIỌNG NÓI ---
+    // --- TRẢ LỜI BÌNH THƯỜNG ---
+    const aiReply = responseMessage.content || "...";
     const finalAudio = await generateSmartAudio(aiReply, mode, voiceId);
-
+    console.log("🤖 AI Reply (Normal):", aiReply);
     res.json({ reply: aiReply, audio: finalAudio });
   } catch (err) {
-    console.error("❌ SERVER ERROR:", err.message);
-    res
-      .status(500)
-      .json({ reply: "Hệ thống đang bận, thử lại sau nhé!", audio: [] });
+    console.error("❌ Lỗi Server:", err.message);
+    res.status(500).json({ reply: "Lỗi hệ thống rồi sếp ơi!", audio: [] });
   }
 });
 
-// ==========================================
-// API PHỤ: QUẢN LÝ LỊCH SỬ CHAT
-// ==========================================
+// --- Quản lý lịch sử chat ---
 router.post("/save-history", (req, res) => {
   const { history } = req.body;
   const date = new Date();
   const fileName = `${date.getDate()}-${date.getMonth() + 1}-${date.getFullYear()}.json`;
   const filePath = path.join(HISTORY_DIR, fileName);
-
-  fs.writeFile(filePath, JSON.stringify(history, null, 2), (err) => {
-    if (err) return res.status(500).json({ success: false });
-    res.json({ success: true, fileName });
-  });
+  fs.writeFileSync(filePath, JSON.stringify(history, null, 2));
+  res.json({ success: true });
 });
 
 router.get("/get-history", (req, res) => {
   const { date } = req.query;
   const filePath = path.join(HISTORY_DIR, `${date}.json`);
-
   if (fs.existsSync(filePath)) {
-    const data = fs.readFileSync(filePath, "utf8");
-    res.json({ success: true, data: JSON.parse(data) });
+    res.json({
+      success: true,
+      data: JSON.parse(fs.readFileSync(filePath, "utf8")),
+    });
   } else {
     res.json({ success: false });
   }
