@@ -160,13 +160,19 @@ function startPractice(title, list) {
   renderQuestion();
 }
 
-// Logic làm sạch và chia tách đáp án có dấu "/"
+// Logic làm sạch ngoặc (Anh/Nhật) và chia tách đáp án qua dấu /
 function cleanAndSplitText(text) {
-  let cleaned = text
-    .replace(/\s*\(.*?\)\s*/g, "")
-    .toLowerCase()
-    .trim();
-  return cleaned.split("/").map((item) => item.trim()); // Trả về mảng các đáp án hợp lệ
+  if (!text) return [""];
+
+  // 1. Xóa nội dung trong ngoặc đơn () và ngoặc Nhật （）
+  let cleaned = text.replace(/\s*[(\（].*?[)\）]\s*/g, "");
+
+  // 2. Tách các đáp án bằng dấu /
+  // 3. Chuyển về chữ thường và trim khoảng trắng thừa từng phần tử
+  return cleaned
+    .split("/")
+    .map((item) => item.toLowerCase().trim())
+    .filter((item) => item !== ""); // Loại bỏ các phần tử rỗng nếu sếp gõ thừa dấu //
 }
 
 // --- 4. LOGIC TRẮC NGHIỆM KHÓA NEXT ---
