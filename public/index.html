@@ -376,7 +376,7 @@
             formData.append("audio", audioBlob, "voice.webm");
 
             try {
-              const res = await fetch("http://localhost:3000/transcribe", {
+              const res = await fetch("/transcribe", {
                 method: "POST",
                 body: formData,
               });
@@ -403,7 +403,7 @@
 
       async function saveHistory() {
         if (!chatHistoryLog.length) return alert("📭 Nhật ký trống!");
-        const res = await fetch("http://localhost:3000/save-history", {
+        const res = await fetch("/save-history", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ history: chatHistoryLog }),
@@ -414,7 +414,7 @@
 
       async function fetchHistory(dateStr) {
         const res = await fetch(
-          `http://localhost:3000/get-history?date=${dateStr}`,
+          `/get-history?date=${dateStr}`,
         );
         const data = await res.json();
         if (data.success) {
